@@ -33,6 +33,7 @@
 #include "ns3/ipv6-header.h"
 #include "ns3/ipv6-interface.h"
 #include "ns3/event-id.h"
+#include "ns3/timer.h"
 #include "tcp-tx-buffer.h"
 #include "tcp-rx-buffer.h"
 #include "rtt-estimator.h"
@@ -166,6 +167,8 @@ public:
 
   uint32_t               m_rcvTimestampValue;     //!< Receiver Timestamp value 
   uint32_t               m_rcvTimestampEchoReply; //!< Sender Timestamp echoed by the receiver
+
+  uint32_t               m_currentPacingRate;     //!< Current Pacing rate
 
   /**
    * \brief Get cwnd in segments rather than bytes
@@ -333,6 +336,16 @@ public:
    */
   TcpSocketBase (const TcpSocketBase& sock);
   virtual ~TcpSocketBase (void);
+
+  /**
+   * \brief Pacing Status
+   */
+  typedef enum
+  {
+    PACING_NONE,                /**< Pacing not required */
+    PACING_NEEDED               /**< Pacing required and will be done on transport layer */
+//    PACING_FQ                 /**< Pacing required and will be handled by fq sched (NOT available as of now) */
+  } PacingStatus_t;
 
   // Set associated Node, TcpL4Protocol, RttEstimator to this socket
 
@@ -1071,6 +1084,11 @@ protected:
    */
   static uint32_t SafeSubtraction (uint32_t a, uint32_t b);
 
+  /**
+   * \brief Notify Pacing
+   */
+  void NotifyPacingPerformed (void);
+
 protected:
   // Counters and events
   EventId           m_retxEvent;       //!< Retransmission event
@@ -1158,6 +1176,11 @@ protected:
 
   TracedCallback<Ptr<const Packet>, const TcpHeader&,
                  Ptr<const TcpSocketBase> > m_rxTrace; //!< Trace of received packets
+
+  // Pacing related variables
+  PacingStatus_t        m_pacingStatus;   //!< Pacing status
+  uint32_t              m_maxPacingRate;  //!< Max Pacing Rate
+  Timer                 m_pacingTimer;    //!< Pacing Event
 };
 
 /**
