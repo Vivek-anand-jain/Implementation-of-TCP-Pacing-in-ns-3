@@ -135,14 +135,6 @@ TcpSocketBase::GetTypeId (void)
                    BooleanValue (true),
                    MakeBooleanAccessor (&TcpSocketBase::m_limitedTx),
                    MakeBooleanChecker ())
-    .AddAttribute ("PacingStatus", "Enable Pacing ",
-                   EnumValue (PacingStatus_t::PACING_NEEDED),
-                   MakeEnumAccessor (&TcpSocketBase::m_pacingStatus),
-                   MakeEnumChecker (PACING_NEEDED, "PACING_NEEDED"))
-    .AddAttribute ("MaxPacingRate", "Set Maximum Pacing Rate",
-                   UintegerValue (UINT32_MAX),
-                   MakeUintegerAccessor (&TcpSocketBase::m_maxPacingRate),
-                   MakeUintegerChecker<uint32_t> ())
     .AddTraceSource ("RTO",
                      "Retransmission timeout",
                      MakeTraceSourceAccessor (&TcpSocketBase::m_rto),
@@ -221,6 +213,15 @@ TcpSocketState::GetTypeId (void)
     .SetParent<Object> ()
     .SetGroupName ("Internet")
     .AddConstructor <TcpSocketState> ()
+    .AddAttribute ("PacingStatus", "Enable Pacing",
+                   EnumValue (PacingStatus_t::PACING_NEEDED),
+                   MakeEnumAccessor (&TcpSocketState::m_pacingStatus),
+                   MakeEnumChecker (PACING_NONE, "PACING_NONE",
+                                    PACING_NEEDED, "PACING_NEEDED"))
+    .AddAttribute ("InitialPacingRate", "Set Initial Pacing Rate",
+                   DataRateValue (DataRate ("4Gb/s")),
+                   MakeDataRateAccessor (&TcpSocketState::m_initialPacingRate),
+                   MakeDataRateChecker ())
     .AddTraceSource ("CongestionWindow",
                      "The TCP connection's congestion window",
                      MakeTraceSourceAccessor (&TcpSocketState::m_cWnd),
@@ -259,7 +260,9 @@ TcpSocketState::TcpSocketState (void)
     m_nextTxSequence (0),
     m_rcvTimestampValue (0),
     m_rcvTimestampEchoReply (0),
-    m_currentPacingRate (UINT32_MAX)
+    m_pacingStatus (PACING_NONE),
+    m_initialPacingRate (0),
+    m_currentPacingRate (0)
 {
 }
 
@@ -276,6 +279,8 @@ TcpSocketState::TcpSocketState (const TcpSocketState &other)
     m_nextTxSequence (other.m_nextTxSequence),
     m_rcvTimestampValue (other.m_rcvTimestampValue),
     m_rcvTimestampEchoReply (other.m_rcvTimestampEchoReply),
+    m_pacingStatus (other.m_pacingStatus),
+    m_initialPacingRate (other.m_initialPacingRate),
     m_currentPacingRate (other.m_currentPacingRate)
 {
 }
@@ -343,8 +348,6 @@ TcpSocketBase::TcpSocketBase (void)
     m_limitedTx (false),
     m_congestionControl (0),
     m_isFirstPartialAck (true),
-    m_pacingStatus (PacingStatus_t::PACING_NEEDED),
-    m_maxPacingRate (UINT32_MAX),
     m_pacingTimer (Timer::REMOVE_ON_DESTROY)
 {
   NS_LOG_FUNCTION (this);
@@ -352,9 +355,8 @@ TcpSocketBase::TcpSocketBase (void)
   m_txBuffer = CreateObject<TcpTxBuffer> ();
   m_tcb      = CreateObject<TcpSocketState> ();
 
-  m_tcb->m_currentPacingRate = m_maxPacingRate;
+  m_tcb->m_currentPacingRate = m_tcb->m_initialPacingRate;
   m_pacingTimer.SetFunction (&TcpSocketBase::NotifyPacingPerformed, this);
-  m_pacingTimer.Cancel ();
 
   bool ok;
 
@@ -427,8 +429,6 @@ TcpSocketBase::TcpSocketBase (const TcpSocketBase& sock)
     m_isFirstPartialAck (sock.m_isFirstPartialAck),
     m_txTrace (sock.m_txTrace),
     m_rxTrace (sock.m_rxTrace),
-    m_pacingStatus (sock.m_pacingStatus),
-    m_maxPacingRate (sock.m_maxPacingRate),
     m_pacingTimer (Timer::REMOVE_ON_DESTROY)
 {
   NS_LOG_FUNCTION (this);
@@ -450,9 +450,8 @@ TcpSocketBase::TcpSocketBase (const TcpSocketBase& sock)
   m_rxBuffer = CopyObject (sock.m_rxBuffer);
   m_tcb = CopyObject (sock.m_tcb);
 
-  m_tcb->m_currentPacingRate = m_maxPacingRate;
+  m_tcb->m_currentPacingRate = m_tcb->m_initialPacingRate;
   m_pacingTimer.SetFunction (&TcpSocketBase::NotifyPacingPerformed, this);
-  m_pacingTimer.Cancel ();
 
   if (sock.m_congestionControl)
     {
@@ -1231,7 +1230,7 @@ TcpSocketBase::DoForwardUp (Ptr<Packet> packet, const Address &fromAddress,
   // Peel off TCP header and do validity checking
   TcpHeader tcpHeader;
   uint32_t bytesRemoved = packet->RemoveHeader (tcpHeader);
-  SequenceNumber32 seq = tcpHeader.GetSequenceNumber ();
+  SequenceNumber32    seq = tcpHeader.GetSequenceNumber ();
   if (bytesRemoved == 0 || bytesRemoved > 60)
     {
       NS_LOG_ERROR ("Bytes removed: " << bytesRemoved << " invalid");
@@ -2677,15 +2676,6 @@ TcpSocketBase::SendDataPacket (SequenceNumber32 seq, uint32_t maxSize, bool with
 {
   NS_LOG_FUNCTION (this << seq << maxSize << withAck);
 
-  if (m_pacingStatus == PacingStatus_t::PACING_NEEDED)
-    {
-      if (m_pacingTimer.IsRunning ())
-        {
-          NS_LOG_INFO ("Skipping Packet due to pacing"  << m_pacingTimer.GetDelayLeft ());
-          return 0;
-        }
-    }
-
   bool isRetransmission = false;
   if (seq != m_tcb->m_highTxMark)
     {
@@ -2696,6 +2686,21 @@ TcpSocketBase::SendDataPacket (SequenceNumber32 seq, uint32_t maxSize, bool with
   uint32_t sz = p->GetSize (); // Size of packet
   uint8_t flags = withAck ? TcpHeader::ACK : 0;
   uint32_t remainingData = m_txBuffer->SizeFromSequence (seq + SequenceNumber32 (sz));
+
+  if (m_tcb->m_pacingStatus == TcpSocketState::PACING_NEEDED)
+    {
+      NS_LOG_DEBUG ("Pacing is enabled");
+      if (m_pacingTimer.IsExpired ())
+        {
+          NS_LOG_DEBUG ("Current Pacing Rate " << m_tcb->m_currentPacingRate);
+          NS_LOG_DEBUG ("Timer is in expired state, activate it " << m_tcb->m_currentPacingRate.CalculateBytesTxTime (sz));
+          m_pacingTimer.Schedule(m_tcb->m_currentPacingRate.CalculateBytesTxTime (sz));
+        }
+      else
+        {
+          NS_LOG_DEBUG ("Timer is already in running state");
+        }
+    }
 
   if (withAck)
     {
@@ -2783,7 +2788,14 @@ TcpSocketBase::SendDataPacket (SequenceNumber32 seq, uint32_t maxSize, bool with
       NS_LOG_LOGIC (this << " SendDataPacket Schedule ReTxTimeout at time " <<
                     Simulator::Now ().GetSeconds () << " to expire at time " <<
                     (Simulator::Now () + m_rto.Get ()).GetSeconds () );
-      m_retxEvent = Simulator::Schedule (m_rto, &TcpSocketBase::ReTxTimeout, this);
+      if (m_tcb->m_pacingStatus == TcpSocketState::PACING_NEEDED && m_pacingTimer.IsRunning () && m_pacingTimer.GetDelayLeft () > 0)
+        {
+          m_retxEvent = Simulator::Schedule (m_pacingTimer.GetDelayLeft () + m_rto, &TcpSocketBase::ReTxTimeout, this);
+        }
+      else
+        {
+          m_retxEvent = Simulator::Schedule (m_rto, &TcpSocketBase::ReTxTimeout, this);
+        }
     }
 
   m_txTrace (p, header, this);
@@ -2803,14 +2815,6 @@ TcpSocketBase::SendDataPacket (SequenceNumber32 seq, uint32_t maxSize, bool with
       NS_LOG_DEBUG ("Send segment of size " << sz << " with remaining data " <<
                     remainingData << " via TcpL4Protocol to " <<  m_endPoint6->GetPeerAddress () <<
                     ". Header " << header);
-    }
-
-  if (m_pacingStatus == PacingStatus_t::PACING_NEEDED)
-    {
-      NS_ASSERT_MSG (m_pacingTimer.IsExpired () == true, "Timer must be in expired state at this time");
-
-      double timeToPace = ((double) sz) / m_tcb->m_currentPacingRate;
-      m_pacingTimer.Schedule(Seconds (timeToPace));
     }
 
   UpdateRttHistory (seq, sz, isRetransmission);
@@ -2876,6 +2880,17 @@ TcpSocketBase::SendPendingData (bool withAck)
   // else branch to control silly window syndrome and Nagle)
   while (availableWindow > 0)
     {
+      if (m_tcb->m_pacingStatus == TcpSocketState::PACING_NEEDED)
+        {
+          NS_LOG_DEBUG ("Pacing is enabled");
+          if (m_pacingTimer.IsRunning ())
+            {
+              NS_LOG_INFO ("Skipping Packet due to pacing"  << m_pacingTimer.GetDelayLeft ());
+              break;
+            }
+          NS_LOG_DEBUG ("Timer is not running");
+        }
+
       if (m_tcb->m_congState == TcpSocketState::CA_OPEN
           && m_state == TcpSocket::FIN_WAIT_1)
         {
@@ -3228,7 +3243,16 @@ TcpSocketBase::NewAck (SequenceNumber32 const& ack, bool resetRTO)
       NS_LOG_LOGIC (this << " Schedule ReTxTimeout at time " <<
                     Simulator::Now ().GetSeconds () << " to expire at time " <<
                     (Simulator::Now () + m_rto.Get ()).GetSeconds ());
-      m_retxEvent = Simulator::Schedule (m_rto, &TcpSocketBase::ReTxTimeout, this);
+
+      if (m_tcb->m_pacingStatus == TcpSocketState::PACING_NEEDED && m_pacingTimer.IsRunning ())
+        {
+          m_retxEvent = Simulator::Schedule (m_pacingTimer.GetDelayLeft () + m_rto, &TcpSocketBase::ReTxTimeout, this);
+        }
+      else
+        {
+          m_retxEvent = Simulator::Schedule (m_rto, &TcpSocketBase::ReTxTimeout, this);
+        }
+
     }
 
   // Note the highest ACK and tell app to send more
@@ -3980,6 +4004,7 @@ TcpSocketBase::NotifyPacingPerformed (void)
 {
   NS_LOG_FUNCTION_NOARGS ();
   NS_LOG_INFO ("Performing Pacing");
+  SendPendingData (m_connected);
 }
 
 

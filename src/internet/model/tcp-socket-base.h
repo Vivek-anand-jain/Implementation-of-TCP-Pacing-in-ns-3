@@ -33,6 +33,7 @@
 #include "ns3/ipv6-header.h"
 #include "ns3/ipv6-interface.h"
 #include "ns3/event-id.h"
+#include "ns3/data-rate.h"
 #include "ns3/timer.h"
 #include "tcp-tx-buffer.h"
 #include "tcp-rx-buffer.h"
@@ -137,6 +138,16 @@ public:
   } TcpCongState_t;
 
   /**
+   * \brief Pacing Status
+   */
+  typedef enum
+  {
+    PACING_NONE,                /**< Pacing not required */
+    PACING_NEEDED               /**< Pacing required and will be done on transport layer */
+//    PACING_FQ                 /**< Pacing required and will be handled by fq sched (NOT available as of now) */
+  } PacingStatus_t;
+
+  /**
    * \ingroup tcp
    * TracedValue Callback signature for TcpCongState_t
    *
@@ -168,7 +179,10 @@ public:
   uint32_t               m_rcvTimestampValue;     //!< Receiver Timestamp value 
   uint32_t               m_rcvTimestampEchoReply; //!< Sender Timestamp echoed by the receiver
 
-  uint32_t               m_currentPacingRate;     //!< Current Pacing rate
+  // Pacing related variables
+  PacingStatus_t         m_pacingStatus;          //!< Pacing status
+  DataRate               m_initialPacingRate;     //!< Initial Pacing rate
+  DataRate               m_currentPacingRate;     //!< Current Pacing rate
 
   /**
    * \brief Get cwnd in segments rather than bytes
@@ -336,16 +350,6 @@ public:
    */
   TcpSocketBase (const TcpSocketBase& sock);
   virtual ~TcpSocketBase (void);
-
-  /**
-   * \brief Pacing Status
-   */
-  typedef enum
-  {
-    PACING_NONE,                /**< Pacing not required */
-    PACING_NEEDED               /**< Pacing required and will be done on transport layer */
-//    PACING_FQ                 /**< Pacing required and will be handled by fq sched (NOT available as of now) */
-  } PacingStatus_t;
 
   // Set associated Node, TcpL4Protocol, RttEstimator to this socket
 
@@ -1177,9 +1181,7 @@ protected:
   TracedCallback<Ptr<const Packet>, const TcpHeader&,
                  Ptr<const TcpSocketBase> > m_rxTrace; //!< Trace of received packets
 
-  // Pacing related variables
-  PacingStatus_t        m_pacingStatus;   //!< Pacing status
-  uint32_t              m_maxPacingRate;  //!< Max Pacing Rate
+  // Pacing related variable
   Timer                 m_pacingTimer;    //!< Pacing Event
 };
 
