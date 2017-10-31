@@ -138,16 +138,6 @@ public:
   } TcpCongState_t;
 
   /**
-   * \brief Pacing Status
-   */
-  typedef enum
-  {
-    PACING_NONE,                /**< Pacing not required */
-    PACING_NEEDED               /**< Pacing required and will be done on transport layer */
-//    PACING_FQ                 /**< Pacing required and will be handled by fq sched (NOT available as of now) */
-  } PacingStatus_t;
-
-  /**
    * \ingroup tcp
    * TracedValue Callback signature for TcpCongState_t
    *
@@ -180,8 +170,8 @@ public:
   uint32_t               m_rcvTimestampEchoReply; //!< Sender Timestamp echoed by the receiver
 
   // Pacing related variables
-  PacingStatus_t         m_pacingStatus;          //!< Pacing status
-  DataRate               m_initialPacingRate;     //!< Initial Pacing rate
+  bool                   m_pacing;                //!< Pacing status
+  DataRate               m_maxPacingRate;         //!< Max Pacing rate
   DataRate               m_currentPacingRate;     //!< Current Pacing rate
 
   /**
