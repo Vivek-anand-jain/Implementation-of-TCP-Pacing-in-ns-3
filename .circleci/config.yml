@@ -1,0 +1,14 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: vivekanandjain/ns3ubuntu:16.04
+
+    steps:
+      - checkout
+      - run:
+          name: Install Graphcool CLI
+          command: |
+            ls
+            mkdir /home/ns-3-dev-git
+            ./waf configure --enable-tests --enable-examples
