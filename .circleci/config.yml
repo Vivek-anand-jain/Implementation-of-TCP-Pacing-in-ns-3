@@ -12,4 +12,4 @@ jobs:
             ls
             mkdir /home/ns-3-dev-git
             ./waf configure --enable-tests --enable-examples
-            ./waf
+            ./waf -j2
