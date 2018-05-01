@@ -196,7 +196,7 @@ TcpSocketBase::GetTypeId (void)
                      MakeTraceSourceAccessor (&TcpSocketBase::m_rxTrace),
                      "ns3::TcpSocketBase::TcpTxRxTracedCallback")
   ;
-  return tid;
+  return tid
 }
 
 TypeId
